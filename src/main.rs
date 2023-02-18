@@ -45,10 +45,6 @@ impl Package for NpmPackage {
     fn name(&self) -> &str {
         self.name.as_ref().expect("package name")
     }
-
-    fn version(&self) -> &Version {
-        &self.version
-    }
 }
 
 #[derive(Debug)]

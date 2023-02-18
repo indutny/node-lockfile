@@ -1,4 +1,3 @@
-use node_semver::Version;
 use petgraph::algo::dominators;
 use petgraph::stable_graph::{NodeIndex, StableGraph};
 use petgraph::visit::EdgeRef;
@@ -8,7 +7,6 @@ use std::ops::Index;
 
 pub trait Package {
     fn name(&self) -> &str;
-    fn version(&self) -> &Version;
 }
 
 #[derive(Debug, Copy, Clone, Default, PartialEq, PartialOrd, Eq, Ord, Hash)]
