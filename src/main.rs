@@ -147,7 +147,8 @@ fn main() {
 
         lock.packages.insert(path, node.package.clone());
     }
-    let json = serde_json::to_string_pretty(&lock).unwrap();
 
+    // Serialize and print
+    let json = serde_json::to_string_pretty(&lock).unwrap();
     println!("{}", json);
 }
