@@ -400,6 +400,8 @@ mod tests {
                 ("shared@2.0.0".into(), vec![]),
                 ("shared@1.0.0".into(), vec!["leaf@1.0.0".into()]),
                 ("shared@1.0.0".into(), vec!["leaf@1.0.0".into()]),
+
+                // These are actually the same tree node, but it doesn't matter!
                 ("leaf@1.0.0".into(), vec![]),
                 ("leaf@1.0.0".into(), vec![]),
             ],
