@@ -1,12 +1,12 @@
 use clap::Parser;
-use node_lockfile::{build_package_hierarchy, Package};
+use node_lockfile::{Package, Tree};
 use node_semver::{Range, Version};
-use petgraph::stable_graph::NodeIndex;
-use petgraph::stable_graph::StableGraph;
+use petgraph::stable_graph::{NodeIndex, StableGraph};
+use petgraph::visit::{VisitMap, Visitable};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -45,10 +45,6 @@ impl Package for NpmPackage {
     fn version(&self) -> &Version {
         &self.version
     }
-
-    fn dependencies(&self) -> Vec<(&String, &Range)> {
-        self.dependencies.iter().collect()
-    }
 }
 
 struct Edge {}
@@ -86,13 +82,12 @@ fn main() {
 
     // Connect edges
     let mut q = VecDeque::new();
-    let mut visited = HashSet::new();
+    let mut visited = graph.visit_map();
     q.push_back(root_idx);
     while let Some(idx) = q.pop_front() {
-        if visited.contains(&idx) {
+        if !visited.visit(idx) {
             continue;
         }
-        visited.insert(idx);
 
         let package = &graph[idx];
         let edges = package
@@ -113,6 +108,6 @@ fn main() {
     }
 
     // Build hierarchy
-    let tree = build_package_hierarchy(root_idx, graph);
+    let tree = Tree::build(graph, root_idx);
     println!("{tree:?}");
 }
