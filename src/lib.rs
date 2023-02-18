@@ -203,6 +203,10 @@ impl<P: Package + Clone> Tree<P> {
             let name = dep.package.name().to_string();
             dep.parent = Some(child);
 
+            let idx = TreeIndex(self.node_count);
+            self.node_count += 1;
+            dep.idx = idx;
+
             // Make sure that dependents are within the child's subtree
             dep.dependents
                 .retain(|&dependent| self.is_ancestor(child, dependent));
