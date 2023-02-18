@@ -40,7 +40,9 @@ impl<P: Package + Clone> Tree<P> {
 
         let dominators = dominators::simple_fast(&graph, root);
         let mut visited = graph.visit_map();
-        tree.build_subtree(&graph, &dominators, dominators.root(), &mut visited);
+
+        tree.build_subtree(&graph, &dominators, tree.root, &mut visited);
+        tree.resolve_conflicts(&graph, tree.root);
 
         tree
     }
@@ -51,22 +53,25 @@ impl<P: Package + Clone> Tree<P> {
         dominators: &dominators::Dominators<NodeIndex>,
         root: NodeIndex,
         visited: &mut V,
-    ) {
-        // Loop
+    ) -> bool {
         if !visited.visit(root) {
-            return;
+            return false;
         }
 
         let mut children: BTreeMap<String, Vec<NodeIndex>> = BTreeMap::new();
         for child_idx in dominators.immediately_dominated_by(root) {
+            if !self.build_subtree(graph, dominators, child_idx, visited) {
+                // Detected loop, break it. First occurence of the package in
+                // the loop would be used throughout the loop.
+                continue;
+            }
+
             let child_name = graph[child_idx].name().to_string();
             if let Some(versions) = children.get_mut(&child_name) {
                 versions.push(child_idx);
             } else {
                 children.insert(child_name, vec![child_idx]);
             }
-
-            self.build_subtree(graph, dominators, child_idx, visited);
         }
 
         self.inner.insert(
@@ -77,5 +82,11 @@ impl<P: Package + Clone> Tree<P> {
                 children,
             },
         );
+
+        true
+    }
+
+    fn resolve_conflicts<E>(&mut self, graph: &StableGraph<P, E>, root: NodeIndex) {
+        // TODO(indutny): implement me.
     }
 }
