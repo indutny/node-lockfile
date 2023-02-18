@@ -231,11 +231,11 @@ impl<P: Package + Clone> Tree<P> {
         for child in targets {
             let mut dep = dep.clone();
             let name = dep.package.name().to_string();
-            dep.parent = Some(child);
 
             let idx = TreeIndex(self.node_count);
             self.node_count += 1;
             dep.idx = idx;
+            dep.parent = Some(child);
 
             // Make sure that dependents are within the child's subtree
             dep.dependents
@@ -246,6 +246,12 @@ impl<P: Package + Clone> Tree<P> {
                 versions.push(dep.idx);
             } else {
                 child.conflicts.insert(name, vec![dep.idx]);
+            }
+
+            for versions in dep.conflicts.values() {
+                for idx in versions {
+                    self.inner.get_mut(idx).expect("child").parent = Some(dep.idx);
+                }
             }
 
             self.inner.insert(idx, dep);
@@ -325,6 +331,11 @@ mod tests {
                 .collect::<Vec<_>>();
             children.sort();
 
+            // verify that parent is in the tree
+            if let Some(parent) = node.parent {
+                assert!(tree.inner.contains_key(&parent));
+            }
+
             res.push((
                 format!("{}@{}", node.package.name, node.package.version),
                 children,
@@ -372,6 +383,8 @@ mod tests {
         let shared = graph.add_node(Node::new("shared", "1.0.0"));
         graph.add_edge(a, shared, Edge {});
         graph.add_edge(b, shared, Edge {});
+        let leaf = graph.add_node(Node::new("leaf", "1.0.0"));
+        graph.add_edge(shared, leaf, Edge {});
         let shared2 = graph.add_node(Node::new("shared", "2.0.0"));
         graph.add_edge(root, shared2, Edge {});
 
@@ -385,8 +398,10 @@ mod tests {
                 ("a@1.0.0".into(), vec!["shared@1.0.0".into()]),
                 ("b@1.0.0".into(), vec!["shared@1.0.0".into()]),
                 ("shared@2.0.0".into(), vec![]),
-                ("shared@1.0.0".into(), vec![]),
-                ("shared@1.0.0".into(), vec![]),
+                ("shared@1.0.0".into(), vec!["leaf@1.0.0".into()]),
+                ("shared@1.0.0".into(), vec!["leaf@1.0.0".into()]),
+                ("leaf@1.0.0".into(), vec![]),
+                ("leaf@1.0.0".into(), vec![]),
             ],
         );
     }
