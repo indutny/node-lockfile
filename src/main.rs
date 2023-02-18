@@ -10,17 +10,21 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 struct NpmPackage {
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
     version: Version,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     dependencies: BTreeMap<String, Range>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    dev_dependencies: BTreeMap<String, Range>,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 struct NpmLock {
     name: String,
     version: Version,
@@ -94,6 +98,7 @@ fn main() {
         let edges = package
             .dependencies
             .iter()
+            .chain(package.dev_dependencies.iter())
             .map(|(name, range)| {
                 let versions = &indices[name];
                 let (_, &dep_idx) = versions.iter().find(|(v, _)| range.satisfies(v)).unwrap();
@@ -110,5 +115,39 @@ fn main() {
 
     // Build hierarchy
     let tree = Tree::build(&graph, root_idx);
-    println!("{tree:?}");
+
+    // Reconstruct lock
+    let mut lock = NpmLock {
+        name: lock.name,
+        version: lock.version,
+        extra: lock.extra,
+        packages: BTreeMap::new(),
+    };
+
+    for node in tree.nodes() {
+        let mut path = Vec::new();
+
+        let mut current = Some(node.idx);
+        while let Some(idx) = current {
+            if idx == tree.root {
+                break;
+            }
+            let parent = &tree[idx];
+            path.push(parent.package.name());
+            current = parent.parent;
+        }
+        path.reverse();
+
+        let path = path.join("/node_modules/");
+        let path = if path.is_empty() {
+            path
+        } else {
+            format!("node_modules/{path}")
+        };
+
+        lock.packages.insert(path, node.package.clone());
+    }
+    let json = serde_json::to_string_pretty(&lock).unwrap();
+
+    println!("{}", json);
 }

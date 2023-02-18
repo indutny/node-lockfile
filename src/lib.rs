@@ -3,7 +3,7 @@ use petgraph::algo::dominators;
 use petgraph::stable_graph::{NodeIndex, StableGraph};
 use petgraph::visit::EdgeRef;
 use petgraph::Direction;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::ops::Index;
 
 pub trait Package {
@@ -55,6 +55,12 @@ impl<P: Package + Clone> Tree<P> {
         tree.resolve_conflicts(tree.root);
 
         tree
+    }
+
+    pub fn nodes(&self) -> TreeNodeIterator<'_, P> {
+        let mut queue = VecDeque::new();
+        queue.push_back(self.root);
+        TreeNodeIterator { tree: self, queue }
     }
 
     fn build_subtree<E>(
@@ -221,5 +227,26 @@ impl<P: Package + Clone> Tree<P> {
             current = parent;
         }
         false
+    }
+}
+
+pub struct TreeNodeIterator<'a, P: Package + Clone> {
+    tree: &'a Tree<P>,
+    queue: VecDeque<TreeIndex>,
+}
+
+impl<'a, P: Package + Clone> Iterator for TreeNodeIterator<'a, P> {
+    type Item = &'a TreeNode<P>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(idx) = self.queue.pop_front() {
+            let res = &self.tree[idx];
+            for versions in res.children.values() {
+                self.queue.extend(versions);
+            }
+            Some(res)
+        } else {
+            None
+        }
     }
 }
