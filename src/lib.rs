@@ -166,13 +166,7 @@ impl<P: Package + Clone> Tree<P> {
                     .cloned()
                     .enumerate()
                     .filter(|(_, idx)| !self.inner[idx].dependents.contains(&root))
-                    .reduce(|(i, a), (j, b)| {
-                        if self.inner[&a].dependents.len() > self.inner[&b].dependents.len() {
-                            (j, b)
-                        } else {
-                            (i, a)
-                        }
-                    })
+                    .min_by_key(|(_, idx)| self.inner[idx].dependents.len())
                     .expect("least used duplicate");
 
                 // Remove package from conflicts
@@ -225,17 +219,10 @@ impl<P: Package + Clone> Tree<P> {
             .filter(|&child| self.is_ancestor(graph, dfs, child, dep))
             .collect::<Vec<_>>();
 
-        let dep = self.inner.remove(&dep).expect("removed dependency");
-
         // Put a copy of dep into each such child.
         for child in targets {
-            let mut dep = dep.clone();
+            let mut dep = self.clone_subtree(dep, Some(child));
             let name = dep.package.name().to_string();
-
-            let idx = TreeIndex(self.node_count);
-            self.node_count += 1;
-            dep.idx = idx;
-            dep.parent = Some(child);
 
             // Make sure that dependents are within the child's subtree
             dep.dependents
@@ -248,13 +235,39 @@ impl<P: Package + Clone> Tree<P> {
                 child.conflicts.insert(name, vec![dep.idx]);
             }
 
-            for versions in dep.conflicts.values() {
-                for idx in versions {
-                    self.inner.get_mut(idx).expect("child").parent = Some(dep.idx);
-                }
-            }
+            self.inner.insert(dep.idx, dep);
+        }
 
-            self.inner.insert(idx, dep);
+        // Finally remove original subtree from the graph
+        self.remove_subtree(dep);
+    }
+
+    fn clone_subtree(&mut self, root: TreeIndex, parent: Option<TreeIndex>) -> TreeNode<P> {
+        let idx = TreeIndex(self.node_count);
+        self.node_count += 1;
+        let mut clone = self.inner[&root].clone();
+        clone.idx = idx;
+        clone.parent = parent;
+
+        // Clone each conflict
+        for versions in clone.conflicts.values_mut() {
+            for child in versions.iter_mut() {
+                let cloned_child = self.clone_subtree(*child, Some(idx));
+                *child = cloned_child.idx;
+                self.inner.insert(cloned_child.idx, cloned_child);
+            }
+        }
+
+        clone
+    }
+
+    fn remove_subtree(&mut self, root: TreeIndex) {
+        let root = self.inner.remove(&root).expect("removed dependency");
+
+        for versions in root.conflicts.into_values() {
+            for child in versions.into_iter() {
+                self.remove_subtree(child);
+            }
         }
     }
 
@@ -334,6 +347,13 @@ mod tests {
             // verify that parent is in the tree
             if let Some(parent) = node.parent {
                 assert!(tree.inner.contains_key(&parent));
+
+                // Verify that this node is a children of its parent
+                tree.inner[&parent]
+                    .children
+                    .values()
+                    .find(|&&child_idx| child_idx == node.idx)
+                    .expect("child to be present in parent");
             }
 
             res.push((
@@ -400,8 +420,6 @@ mod tests {
                 ("shared@2.0.0".into(), vec![]),
                 ("shared@1.0.0".into(), vec!["leaf@1.0.0".into()]),
                 ("shared@1.0.0".into(), vec!["leaf@1.0.0".into()]),
-
-                // These are actually the same tree node, but it doesn't matter!
                 ("leaf@1.0.0".into(), vec![]),
                 ("leaf@1.0.0".into(), vec![]),
             ],
