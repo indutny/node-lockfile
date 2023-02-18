@@ -377,8 +377,11 @@ mod tests {
         graph.add_edge(a, shared, Edge {});
         graph.add_edge(b, shared, Edge {});
 
+        let tree = Tree::build(&graph, root);
+        assert_eq!(tree.inner.len(), 4);
+
         assert_eq!(
-            render_tree(&Tree::build(&graph, root)),
+            render_tree(&tree),
             vec![
                 (
                     "root@1.0.0".into(),
@@ -408,8 +411,11 @@ mod tests {
         let shared2 = graph.add_node(Node::new("shared", "2.0.0"));
         graph.add_edge(root, shared2, Edge {});
 
+        let tree = Tree::build(&graph, root);
+        assert_eq!(tree.inner.len(), 8);
+
         assert_eq!(
-            render_tree(&Tree::build(&graph, root)),
+            render_tree(&tree),
             vec![
                 (
                     "root@1.0.0".into(),
