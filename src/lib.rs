@@ -2,6 +2,7 @@ use node_semver::Version;
 use petgraph::algo::dominators;
 use petgraph::stable_graph::{NodeIndex, StableGraph};
 use petgraph::visit::{VisitMap, Visitable};
+use petgraph::Direction;
 use std::collections::BTreeMap;
 use std::ops::Index;
 
@@ -87,6 +88,40 @@ impl<P: Package + Clone> Tree<P> {
     }
 
     fn resolve_conflicts<E>(&mut self, graph: &StableGraph<P, E>, root: NodeIndex) {
-        // TODO(indutny): implement me.
+        let node = self.inner.get_mut(&root).expect("node");
+        let mut queue = Vec::new();
+        for (name, conflicts) in node.children.iter_mut() {
+            while conflicts.len() > 1 {
+                // Select conflicting package with less dependent packages.
+                let (i, least_used) = conflicts
+                    .iter()
+                    .cloned()
+                    .enumerate()
+                    .reduce(|(i, a), (j, b)| {
+                        if get_use_count(graph, a) > get_use_count(graph, b) {
+                            (j, b)
+                        } else {
+                            (i, a)
+                        }
+                    })
+                    .expect("least used duplicate");
+
+                // Remove package
+                conflicts.remove(i);
+
+                // Duplicate package into node's children that are its ancestors
+            }
+
+            assert_eq!(conflicts.len(), 1);
+            queue.push(conflicts[0]);
+        }
+
+        for child_idx in queue {
+            self.resolve_conflicts(graph, child_idx);
+        }
     }
+}
+
+fn get_use_count<P: Package + Clone, E>(graph: &StableGraph<P, E>, node: NodeIndex) -> usize {
+    graph.edges_directed(node, Direction::Incoming).count()
 }
