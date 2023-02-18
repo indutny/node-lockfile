@@ -1,8 +1,9 @@
 use petgraph::algo::dominators;
+use petgraph::algo::DfsSpace;
 use petgraph::stable_graph::{NodeIndex, StableGraph};
-use petgraph::visit::EdgeRef;
+use petgraph::visit::{EdgeRef, Visitable};
 use petgraph::Direction;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::ops::Index;
 
 pub trait Package {
@@ -18,8 +19,9 @@ pub struct TreeNode<P: Package + Clone> {
     pub graph_idx: NodeIndex,
     pub package: P,
     pub parent: Option<TreeIndex>,
-    pub dependents: Vec<TreeIndex>,
-    pub children: BTreeMap<String, Vec<TreeIndex>>,
+    dependents: HashSet<TreeIndex>,
+    pub children: BTreeMap<String, TreeIndex>,
+    conflicts: BTreeMap<String, Vec<TreeIndex>>,
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +39,8 @@ impl<P: Package + Clone> Index<TreeIndex> for Tree<P> {
     }
 }
 
+type StableDfsSpace<P, E> = DfsSpace<NodeIndex, <StableGraph<P, E> as Visitable>::Map>;
+
 impl<P: Package + Clone> Tree<P> {
     pub fn build<E>(graph: &StableGraph<P, E>, root: NodeIndex) -> Self {
         let mut tree = Tree {
@@ -50,7 +54,9 @@ impl<P: Package + Clone> Tree<P> {
 
         tree.build_subtree(graph, &dominators, root, None, &mut idx_converter);
         tree.init_dependents(graph, tree.root, &idx_converter);
-        tree.resolve_conflicts(tree.root);
+
+        let mut dfs = DfsSpace::new(graph);
+        tree.resolve_conflicts(graph, &mut dfs, tree.root);
 
         tree
     }
@@ -77,7 +83,7 @@ impl<P: Package + Clone> Tree<P> {
         self.node_count += 1;
         idx_converter.insert(root, idx);
 
-        let mut children: BTreeMap<String, Vec<TreeIndex>> = BTreeMap::new();
+        let mut conflicts: BTreeMap<String, Vec<TreeIndex>> = BTreeMap::new();
         for child_idx in dominators.immediately_dominated_by(root) {
             if !self.build_subtree(graph, dominators, child_idx, Some(idx), idx_converter) {
                 // Detected loop, break it. First occurence of the package in
@@ -87,10 +93,10 @@ impl<P: Package + Clone> Tree<P> {
 
             let child_name = graph[child_idx].name().to_string();
             let child_idx = idx_converter[&child_idx];
-            if let Some(versions) = children.get_mut(&child_name) {
+            if let Some(versions) = conflicts.get_mut(&child_name) {
                 versions.push(child_idx);
             } else {
-                children.insert(child_name, vec![child_idx]);
+                conflicts.insert(child_name, vec![child_idx]);
             }
         }
 
@@ -102,8 +108,9 @@ impl<P: Package + Clone> Tree<P> {
                 package: graph[root].clone(),
                 parent,
                 // Will be filled later
-                dependents: Vec::new(),
-                children,
+                dependents: HashSet::new(),
+                conflicts,
+                children: BTreeMap::new(),
             },
         );
 
@@ -124,34 +131,41 @@ impl<P: Package + Clone> Tree<P> {
         );
 
         // Satisfy borrow checker
-        let children = tree_node
-            .children
+        let conflicts = tree_node
+            .conflicts
             .values()
             .flat_map(|v| v.iter())
             .cloned()
             .collect::<Vec<_>>();
-        for tree_idx in children {
+        for tree_idx in conflicts {
             self.init_dependents(graph, tree_idx, idx_converter);
         }
     }
 
-    fn resolve_conflicts(&mut self, root: TreeIndex) {
+    fn resolve_conflicts<E>(
+        &mut self,
+        graph: &StableGraph<P, E>,
+        dfs: &mut StableDfsSpace<P, E>,
+        root: TreeIndex,
+    ) {
         let mut queue = Vec::new();
 
-        // We need to have two mutable references to node's children so
-        // unfortunately this copy of children keys is needed.
+        // We need to have two mutable references to node's conflicts so
+        // unfortunately this copy of conflicts keys is needed.
         let child_names = self.inner[&root]
-            .children
+            .conflicts
             .keys()
             .cloned()
             .collect::<Vec<_>>();
         for name in child_names.into_iter() {
-            while self.inner[&root].children[&name].len() > 1 {
-                // Select conflicting package with less dependent packages.
-                let (i, least_used) = self.inner[&root].children[&name]
+            while self.inner[&root].conflicts[&name].len() > 1 {
+                // Select conflicting package with less dependent packages that
+                // are not dependencies of the root.
+                let (i, least_used) = self.inner[&root].conflicts[&name]
                     .iter()
                     .cloned()
                     .enumerate()
+                    .filter(|(_, idx)| !self.inner[idx].dependents.contains(&root))
                     .reduce(|(i, a), (j, b)| {
                         if self.inner[&a].dependents.len() > self.inner[&b].dependents.len() {
                             (j, b)
@@ -161,38 +175,54 @@ impl<P: Package + Clone> Tree<P> {
                     })
                     .expect("least used duplicate");
 
-                // Remove package
+                // Remove package from conflicts
                 self.inner
                     .get_mut(&root)
                     .expect("root")
-                    .children
+                    .conflicts
                     .get_mut(&name)
                     .expect("child package")
                     .remove(i);
 
-                // Duplicate package into node's children that are also
+                // Duplicate package into node's conflicts that are also
                 // ancestors of the `least_used` (i.e. the subtrees that use
                 // `least_used`).
-                self.duplicate(root, least_used);
+                self.duplicate(graph, dfs, root, least_used);
             }
 
-            assert_eq!(self.inner[&root].children[&name].len(), 1);
-            queue.push(self.inner[&root].children[&name][0]);
+            assert_eq!(self.inner[&root].conflicts[&name].len(), 1);
+            queue.push(self.inner[&root].conflicts[&name][0]);
+        }
+
+        // Populate `children` by draining `conflicts`
+        {
+            let root = self.inner.get_mut(&root).expect("root");
+
+            while let Some((name, conflicts)) = root.conflicts.pop_last() {
+                assert_eq!(conflicts.len(), 1);
+                root.children.insert(name, conflicts[0]);
+            }
         }
 
         for child_idx in queue {
-            self.resolve_conflicts(child_idx);
+            self.resolve_conflicts(graph, dfs, child_idx);
         }
     }
 
-    fn duplicate(&mut self, root: TreeIndex, dep: TreeIndex) {
-        // Find children of `root` that are still ancestors of `dep`
+    fn duplicate<E>(
+        &mut self,
+        graph: &StableGraph<P, E>,
+        dfs: &mut StableDfsSpace<P, E>,
+        root: TreeIndex,
+        dep: TreeIndex,
+    ) {
+        // Find conflicts of `root` that are still ancestors of `dep`
         let targets = self.inner[&root]
-            .children
+            .conflicts
             .values()
             .flatten()
             .cloned()
-            .filter(|&child| self.is_ancestor(child, dep))
+            .filter(|&child| self.is_ancestor(graph, dfs, child, dep))
             .collect::<Vec<_>>();
 
         let dep = self.inner.remove(&dep).expect("removed dependency");
@@ -209,26 +239,32 @@ impl<P: Package + Clone> Tree<P> {
 
             // Make sure that dependents are within the child's subtree
             dep.dependents
-                .retain(|&dependent| self.is_ancestor(child, dependent));
+                .retain(|&dependent| self.is_ancestor(graph, dfs, child, dependent));
 
             let child = self.inner.get_mut(&child).expect("child");
-            if let Some(versions) = child.children.get_mut(&name) {
+            if let Some(versions) = child.conflicts.get_mut(&name) {
                 versions.push(dep.idx);
             } else {
-                child.children.insert(name, vec![dep.idx]);
+                child.conflicts.insert(name, vec![dep.idx]);
             }
+
+            self.inner.insert(idx, dep);
         }
     }
 
-    fn is_ancestor(&self, ancestor: TreeIndex, node: TreeIndex) -> bool {
-        let mut current = node;
-        while let Some(parent) = self.inner[&current].parent {
-            if parent == ancestor {
-                return true;
-            }
-            current = parent;
-        }
-        false
+    fn is_ancestor<E>(
+        &self,
+        graph: &StableGraph<P, E>,
+        dfs: &mut StableDfsSpace<P, E>,
+        ancestor: TreeIndex,
+        node: TreeIndex,
+    ) -> bool {
+        petgraph::algo::has_path_connecting(
+            graph,
+            self.inner[&ancestor].graph_idx,
+            self.inner[&node].graph_idx,
+            Some(dfs),
+        )
     }
 }
 
@@ -243,12 +279,115 @@ impl<'a, P: Package + Clone> Iterator for TreeNodeIterator<'a, P> {
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(idx) = self.queue.pop_front() {
             let res = &self.tree[idx];
-            for versions in res.children.values() {
-                self.queue.extend(versions);
-            }
+            self.queue.extend(res.children.values());
             Some(res)
         } else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, Clone)]
+    struct Node {
+        name: String,
+        version: String,
+    }
+
+    #[derive(Debug, Clone)]
+    struct Edge {}
+
+    impl Package for Node {
+        fn name(&self) -> &str {
+            &self.name
+        }
+    }
+
+    impl Node {
+        fn new(name: &str, version: &str) -> Self {
+            Self {
+                name: name.to_string(),
+                version: version.to_string(),
+            }
+        }
+    }
+
+    fn render_tree(tree: &Tree<Node>) -> Vec<(String, Vec<String>)> {
+        let mut res = Vec::new();
+        for node in tree.nodes() {
+            let mut children = node
+                .children
+                .values()
+                .map(|&idx| format!("{}@{}", tree[idx].package.name, tree[idx].package.version))
+                .collect::<Vec<_>>();
+            children.sort();
+
+            res.push((
+                format!("{}@{}", node.package.name, node.package.version),
+                children,
+            ));
+        }
+        res
+    }
+
+    #[test]
+    fn it_promotes_shared_dependencies() {
+        let mut graph = StableGraph::new();
+
+        let root = graph.add_node(Node::new("root", "1.0.0"));
+        let a = graph.add_node(Node::new("a", "1.0.0"));
+        graph.add_edge(root, a, Edge {});
+        let b = graph.add_node(Node::new("b", "1.0.0"));
+        graph.add_edge(root, b, Edge {});
+        let shared = graph.add_node(Node::new("shared", "1.0.0"));
+        graph.add_edge(a, shared, Edge {});
+        graph.add_edge(b, shared, Edge {});
+
+        assert_eq!(
+            render_tree(&Tree::build(&graph, root)),
+            vec![
+                (
+                    "root@1.0.0".into(),
+                    vec!["a@1.0.0".into(), "b@1.0.0".into(), "shared@1.0.0".into()]
+                ),
+                ("a@1.0.0".into(), vec![]),
+                ("b@1.0.0".into(), vec![]),
+                ("shared@1.0.0".into(), vec![]),
+            ],
+        );
+    }
+
+    #[test]
+    fn it_demotes_conflicts() {
+        let mut graph = StableGraph::new();
+
+        let root = graph.add_node(Node::new("root", "1.0.0"));
+        let a = graph.add_node(Node::new("a", "1.0.0"));
+        graph.add_edge(root, a, Edge {});
+        let b = graph.add_node(Node::new("b", "1.0.0"));
+        graph.add_edge(root, b, Edge {});
+        let shared = graph.add_node(Node::new("shared", "1.0.0"));
+        graph.add_edge(a, shared, Edge {});
+        graph.add_edge(b, shared, Edge {});
+        let shared2 = graph.add_node(Node::new("shared", "2.0.0"));
+        graph.add_edge(root, shared2, Edge {});
+
+        assert_eq!(
+            render_tree(&Tree::build(&graph, root)),
+            vec![
+                (
+                    "root@1.0.0".into(),
+                    vec!["a@1.0.0".into(), "b@1.0.0".into(), "shared@2.0.0".into()]
+                ),
+                ("a@1.0.0".into(), vec!["shared@1.0.0".into()]),
+                ("b@1.0.0".into(), vec!["shared@1.0.0".into()]),
+                ("shared@2.0.0".into(), vec![]),
+                ("shared@1.0.0".into(), vec![]),
+                ("shared@1.0.0".into(), vec![]),
+            ],
+        );
     }
 }
