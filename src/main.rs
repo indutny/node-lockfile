@@ -47,6 +47,7 @@ impl Package for NpmPackage {
     }
 }
 
+#[derive(Debug)]
 struct Edge {}
 
 fn main() {
@@ -108,6 +109,6 @@ fn main() {
     }
 
     // Build hierarchy
-    let tree = Tree::build(graph, root_idx);
+    let tree = Tree::build(&graph, root_idx);
     println!("{tree:?}");
 }
