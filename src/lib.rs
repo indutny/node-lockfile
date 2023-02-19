@@ -356,8 +356,8 @@ impl<P: Package + Clone> Tree<P> {
                 let version_conflict = graph
                     .edges_directed(self.inner[&parent].graph_idx, Direction::Outgoing)
                     .any(|e| {
-                        e.target() != self.inner[child_idx].graph_idx &&
-                            graph[e.target()].name() == child_name
+                        e.target() != self.inner[child_idx].graph_idx
+                            && graph[e.target()].name() == child_name
                     });
                 if version_conflict {
                     continue;
@@ -628,7 +628,10 @@ mod tests {
         assert_eq!(
             render_tree(&tree),
             vec![
-                ("root@1.0.0".into(), vec!["a@1.0.0".into(), "c@1.0.0".into(),]),
+                (
+                    "root@1.0.0".into(),
+                    vec!["a@1.0.0".into(), "c@1.0.0".into(),]
+                ),
                 ("a@1.0.0".into(), vec!["b@1.0.0".into()]),
                 ("c@1.0.0".into(), vec![]),
                 ("b@1.0.0".into(), vec!["c@2.0.0".into()]),
