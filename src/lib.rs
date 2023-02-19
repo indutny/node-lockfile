@@ -19,8 +19,9 @@ pub struct TreeNode<P: Package + Clone> {
     pub graph_idx: NodeIndex,
     pub package: P,
     pub parent: Option<TreeIndex>,
-    dependents: HashSet<TreeIndex>,
     pub children: BTreeMap<String, TreeIndex>,
+
+    dependents: HashSet<TreeIndex>,
     conflicts: BTreeMap<String, Vec<TreeIndex>>,
 }
 
@@ -57,6 +58,8 @@ impl<P: Package + Clone> Tree<P> {
 
         let mut dfs = DfsSpace::new(graph);
         tree.resolve_conflicts(graph, &mut dfs, tree.root);
+
+        tree.lower_dependencies(tree.root);
 
         tree
     }
@@ -157,7 +160,7 @@ impl<P: Package + Clone> Tree<P> {
             .keys()
             .cloned()
             .collect::<Vec<_>>();
-        for name in child_names.into_iter() {
+        for name in child_names {
             while self.inner[&root].conflicts[&name].len() > 1 {
                 // Select conflicting package with less dependent packages that
                 // are not dependencies of the root.
@@ -198,6 +201,7 @@ impl<P: Package + Clone> Tree<P> {
             }
         }
 
+        // Recurse
         for child_idx in queue {
             self.resolve_conflicts(graph, dfs, child_idx);
         }
@@ -284,6 +288,67 @@ impl<P: Package + Clone> Tree<P> {
             self.inner[&node].graph_idx,
             Some(dfs),
         )
+    }
+
+    fn lower_dependencies(&mut self, root: TreeIndex) {
+        // Recurse and lower dependcies in children
+        let children = self.inner[&root]
+            .children
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for child_name in children {
+            self.lower_dependencies(self.inner[&root].children[&child_name]);
+        }
+
+        // Note that we need a fresh list of children here since it could have
+        // changed.
+        let children = self.inner[&root]
+            .children
+            .clone()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if let Some(parent) = self.inner[&root].parent {
+            // Now try to lower each leaf child.
+            for (child_name, child_idx) in children {
+                let is_leaf = self.inner[&child_idx].children.is_empty();
+                if !is_leaf {
+                    continue;
+                }
+
+                // Check if parent already has a child with the same version
+                if let Some(other_child) = self.inner[&parent].children.get(&child_name) {
+                    if self.inner[other_child].graph_idx != self.inner[&child_idx].graph_idx {
+                        continue;
+                    }
+
+                    // If yes - the leaf is redundant
+                    self.inner
+                        .get_mut(&root)
+                        .expect("root")
+                        .children
+                        .remove(&child_name)
+                        .expect("child to be removed");
+                    self.remove_subtree(child_idx);
+                } else {
+                    // Move child from root to root's parent.
+                    self.inner
+                        .get_mut(&root)
+                        .expect("root")
+                        .children
+                        .remove(&child_name)
+                        .expect("child to be removed");
+                    self.inner
+                        .get_mut(&parent)
+                        .expect("parent")
+                        .children
+                        .insert(child_name, child_idx);
+
+                    // Change child's parent
+                    self.inner.get_mut(&child_idx).expect("child").parent = Some(parent);
+                }
+            }
+        }
     }
 }
 
@@ -412,22 +477,26 @@ mod tests {
         graph.add_edge(root, shared2, Edge {});
 
         let tree = Tree::build(&graph, root);
-        assert_eq!(tree.inner.len(), 8);
+        assert_eq!(tree.inner.len(), 7);
 
         assert_eq!(
             render_tree(&tree),
             vec![
                 (
                     "root@1.0.0".into(),
-                    vec!["a@1.0.0".into(), "b@1.0.0".into(), "shared@2.0.0".into()]
+                    vec![
+                        "a@1.0.0".into(),
+                        "b@1.0.0".into(),
+                        "leaf@1.0.0".into(),
+                        "shared@2.0.0".into()
+                    ]
                 ),
                 ("a@1.0.0".into(), vec!["shared@1.0.0".into()]),
                 ("b@1.0.0".into(), vec!["shared@1.0.0".into()]),
+                ("leaf@1.0.0".into(), vec![]),
                 ("shared@2.0.0".into(), vec![]),
-                ("shared@1.0.0".into(), vec!["leaf@1.0.0".into()]),
-                ("shared@1.0.0".into(), vec!["leaf@1.0.0".into()]),
-                ("leaf@1.0.0".into(), vec![]),
-                ("leaf@1.0.0".into(), vec![]),
+                ("shared@1.0.0".into(), vec![]),
+                ("shared@1.0.0".into(), vec![]),
             ],
         );
     }
