@@ -65,7 +65,7 @@ impl<P: Package + Clone> Tree<P> {
         let mut dfs = DfsSpace::new(graph);
         tree.resolve_conflicts(graph, &mut dfs, tree.root);
 
-        tree.lower_dependencies(tree.root);
+        tree.promote_leafs(graph, tree.root);
 
         tree
     }
@@ -294,7 +294,7 @@ impl<P: Package + Clone> Tree<P> {
         )
     }
 
-    fn lower_dependencies(&mut self, root: TreeIndex) {
+    fn promote_leafs<E>(&mut self, graph: &StableGraph<P, E>, root: TreeIndex) {
         // Clear unused data
         self[root].dependents.clear();
 
@@ -305,7 +305,7 @@ impl<P: Package + Clone> Tree<P> {
             .cloned()
             .collect::<Vec<_>>();
         for child_name in children {
-            self.lower_dependencies(self.inner[&root].children[&child_name]);
+            self.promote_leafs(graph, self.inner[&root].children[&child_name]);
         }
 
         // Note that we need a fresh list of children here since it could have
@@ -317,34 +317,56 @@ impl<P: Package + Clone> Tree<P> {
             .collect::<Vec<_>>();
         if let Some(parent) = self.inner[&root].parent {
             // Now try to lower each leaf child.
-            for (child_name, child_idx) in children {
-                let is_leaf = self.inner[&child_idx].children.is_empty();
+            for (child_name, child_idx) in children.iter() {
+                let is_leaf = self.inner[child_idx].children.is_empty();
                 if !is_leaf {
                     continue;
                 }
 
+                // Check if the leaf child has dependencies under the root. If
+                // yes - it won't be able to require them from the parent so
+                // we cannot promote it.
+                //
+                // Note that we could potentially lower that other child first,
+                // but we don't bother with it.
+                let has_local_deps = children.iter().any(|(_, other_idx)| {
+                    // Other child already promoted!
+                    if !self.inner.contains_key(other_idx) {
+                        return false;
+                    }
+
+                    graph.contains_edge(
+                        self.inner[child_idx].graph_idx,
+                        self.inner[other_idx].graph_idx,
+                    )
+                });
+                if has_local_deps {
+                    continue;
+                }
+
                 // Check if parent already has a child with the same version
-                if let Some(other_child) = self.inner[&parent].children.get(&child_name) {
-                    if self.inner[other_child].graph_idx != self.inner[&child_idx].graph_idx {
+                if let Some(other_child) = self.inner[&parent].children.get(child_name) {
+                    // If yes, but different version - not optimizable
+                    if self.inner[other_child].graph_idx != self.inner[child_idx].graph_idx {
                         continue;
                     }
 
                     // If yes - the leaf is redundant
                     self[root]
                         .children
-                        .remove(&child_name)
+                        .remove(child_name)
                         .expect("child to be removed");
-                    self.remove_subtree(child_idx);
+                    self.remove_subtree(*child_idx);
                 } else {
                     // Move child from root to root's parent.
                     self[root]
                         .children
-                        .remove(&child_name)
+                        .remove(child_name)
                         .expect("child to be removed");
-                    self[parent].children.insert(child_name, child_idx);
+                    self[parent].children.insert(child_name.clone(), *child_idx);
 
                     // Change child's parent
-                    self[child_idx].parent = Some(parent);
+                    self[*child_idx].parent = Some(parent);
                 }
             }
         }
@@ -496,6 +518,38 @@ mod tests {
                 ("shared@2.0.0".into(), vec![]),
                 ("shared@1.0.0".into(), vec![]),
                 ("shared@1.0.0".into(), vec![]),
+            ],
+        );
+    }
+
+    #[test]
+    fn it_doesnt_lower_past_dependencies() {
+        let mut graph = StableGraph::new();
+
+        let root = graph.add_node(Node::new("root", "1.0.0"));
+        let a = graph.add_node(Node::new("a", "1.0.0"));
+        graph.add_edge(root, a, Edge {});
+        let b = graph.add_node(Node::new("b", "1.0.0"));
+        graph.add_edge(a, b, Edge {});
+        let c1 = graph.add_node(Node::new("c", "1.0.0"));
+        graph.add_edge(b, c1, Edge {});
+        let c2 = graph.add_node(Node::new("c", "2.0.0"));
+        graph.add_edge(root, c2, Edge {});
+
+        let tree = Tree::build(&graph, root);
+        assert_eq!(tree.inner.len(), 5);
+
+        assert_eq!(
+            render_tree(&tree),
+            vec![
+                (
+                    "root@1.0.0".into(),
+                    vec!["a@1.0.0".into(), "c@2.0.0".into(),]
+                ),
+                ("a@1.0.0".into(), vec!["b@1.0.0".into(), "c@1.0.0".into()]),
+                ("c@2.0.0".into(), vec![]),
+                ("b@1.0.0".into(), vec![]),
+                ("c@1.0.0".into(), vec![]),
             ],
         );
     }
