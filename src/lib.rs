@@ -291,6 +291,9 @@ impl<P: Package + Clone> Tree<P> {
     }
 
     fn lower_dependencies(&mut self, root: TreeIndex) {
+        // Clear unused data
+        self.inner.get_mut(&root).expect("root").dependents.clear();
+
         // Recurse and lower dependcies in children
         let children = self.inner[&root]
             .children
