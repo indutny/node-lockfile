@@ -6,6 +6,8 @@ use petgraph::Direction;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::ops::{Index, IndexMut};
 
+const MAX_PROMOTE_ITERATIONS: usize = 10;
+
 pub trait Package {
     fn name(&self) -> &str;
 }
@@ -65,7 +67,11 @@ impl<P: Package + Clone> Tree<P> {
         let mut dfs = DfsSpace::new(graph);
         tree.resolve_conflicts(graph, &mut dfs, tree.root);
 
-        tree.promote_leafs(graph, tree.root);
+        for _ in 0..MAX_PROMOTE_ITERATIONS {
+            if !tree.promote_leafs(graph, tree.root) {
+                break;
+            }
+        }
 
         tree
     }
@@ -294,7 +300,9 @@ impl<P: Package + Clone> Tree<P> {
         )
     }
 
-    fn promote_leafs<E>(&mut self, graph: &StableGraph<P, E>, root: TreeIndex) {
+    fn promote_leafs<E>(&mut self, graph: &StableGraph<P, E>, root: TreeIndex) -> bool {
+        let mut changes = false;
+
         // Clear unused data
         self[root].dependents.clear();
 
@@ -305,17 +313,20 @@ impl<P: Package + Clone> Tree<P> {
             .cloned()
             .collect::<Vec<_>>();
         for child_name in children {
-            self.promote_leafs(graph, self.inner[&root].children[&child_name]);
+            if self.promote_leafs(graph, self.inner[&root].children[&child_name]) {
+                changes = true;
+            }
         }
 
         // Note that we need a fresh list of children here since it could have
         // changed.
-        let children = self.inner[&root]
-            .children
-            .clone()
-            .into_iter()
-            .collect::<Vec<_>>();
         if let Some(parent) = self.inner[&root].parent {
+            let children = self.inner[&root]
+                .children
+                .clone()
+                .into_iter()
+                .collect::<Vec<_>>();
+
             // Now try to lower each leaf child.
             for (child_name, child_idx) in children.iter() {
                 let is_leaf = self.inner[child_idx].children.is_empty();
@@ -326,9 +337,6 @@ impl<P: Package + Clone> Tree<P> {
                 // Check if the leaf child has dependencies under the root. If
                 // yes - it won't be able to require them from the parent so
                 // we cannot promote it.
-                //
-                // Note that we could potentially lower that other child first,
-                // but we don't bother with it.
                 let has_local_deps = children.iter().any(|(_, other_idx)| {
                     // Other child already promoted!
                     if !self.inner.contains_key(other_idx) {
@@ -368,8 +376,12 @@ impl<P: Package + Clone> Tree<P> {
                     // Change child's parent
                     self[*child_idx].parent = Some(parent);
                 }
+
+                changes = true;
             }
         }
+
+        changes
     }
 }
 
@@ -550,6 +562,35 @@ mod tests {
                 ("c@2.0.0".into(), vec![]),
                 ("b@1.0.0".into(), vec![]),
                 ("c@1.0.0".into(), vec![]),
+            ],
+        );
+    }
+
+    #[test]
+    fn it_promotes_leaves_repeatedly() {
+        let mut graph = StableGraph::new();
+
+        let root = graph.add_node(Node::new("a", "1.0.0"));
+        let b = graph.add_node(Node::new("b", "2.0.0"));
+        graph.add_edge(root, b, Edge {});
+        let c = graph.add_node(Node::new("c", "3.0.0"));
+        graph.add_edge(b, c, Edge {});
+        let d = graph.add_node(Node::new("d", "4.0.0"));
+        graph.add_edge(b, d, Edge {});
+        let c2 = graph.add_node(Node::new("c", "5.0.0"));
+        graph.add_edge(d, c2, Edge {});
+
+        let tree = Tree::build(&graph, root);
+        assert_eq!(tree.inner.len(), 5);
+
+        assert_eq!(
+            render_tree(&tree),
+            vec![
+                ("a@1.0.0".into(), vec!["b@2.0.0".into(), "c@3.0.0".into(),]),
+                ("b@2.0.0".into(), vec!["c@5.0.0".into(), "d@4.0.0".into()]),
+                ("c@3.0.0".into(), vec![]),
+                ("c@5.0.0".into(), vec![]),
+                ("d@4.0.0".into(), vec![]),
             ],
         );
     }
