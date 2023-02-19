@@ -4,7 +4,7 @@ use petgraph::stable_graph::{NodeIndex, StableGraph};
 use petgraph::visit::{EdgeRef, Visitable};
 use petgraph::Direction;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::ops::Index;
+use std::ops::{Index, IndexMut};
 
 pub trait Package {
     fn name(&self) -> &str;
@@ -37,6 +37,12 @@ impl<P: Package + Clone> Index<TreeIndex> for Tree<P> {
 
     fn index(&self, idx: TreeIndex) -> &TreeNode<P> {
         &self.inner[&idx]
+    }
+}
+
+impl<P: Package + Clone> IndexMut<TreeIndex> for Tree<P> {
+    fn index_mut(&mut self, idx: TreeIndex) -> &mut TreeNode<P> {
+        self.inner.get_mut(&idx).expect("lookup failure")
     }
 }
 
@@ -126,7 +132,7 @@ impl<P: Package + Clone> Tree<P> {
         root: TreeIndex,
         idx_converter: &HashMap<NodeIndex, TreeIndex>,
     ) {
-        let tree_node = self.inner.get_mut(&root).expect("tree node");
+        let tree_node = &mut self[root];
         tree_node.dependents.extend(
             graph
                 .edges_directed(tree_node.graph_idx, Direction::Incoming)
@@ -173,9 +179,7 @@ impl<P: Package + Clone> Tree<P> {
                     .expect("least used duplicate");
 
                 // Remove package from conflicts
-                self.inner
-                    .get_mut(&root)
-                    .expect("root")
+                self[root]
                     .conflicts
                     .get_mut(&name)
                     .expect("child package")
@@ -193,7 +197,7 @@ impl<P: Package + Clone> Tree<P> {
 
         // Populate `children` by draining `conflicts`
         {
-            let root = self.inner.get_mut(&root).expect("root");
+            let root = &mut self[root];
 
             while let Some((name, conflicts)) = root.conflicts.pop_last() {
                 assert_eq!(conflicts.len(), 1);
@@ -232,7 +236,7 @@ impl<P: Package + Clone> Tree<P> {
             dep.dependents
                 .retain(|&dependent| self.is_ancestor(graph, dfs, child, dependent));
 
-            let child = self.inner.get_mut(&child).expect("child");
+            let child = &mut self[child];
             if let Some(versions) = child.conflicts.get_mut(&name) {
                 versions.push(dep.idx);
             } else {
@@ -292,7 +296,7 @@ impl<P: Package + Clone> Tree<P> {
 
     fn lower_dependencies(&mut self, root: TreeIndex) {
         // Clear unused data
-        self.inner.get_mut(&root).expect("root").dependents.clear();
+        self[root].dependents.clear();
 
         // Recurse and lower dependcies in children
         let children = self.inner[&root]
@@ -326,29 +330,21 @@ impl<P: Package + Clone> Tree<P> {
                     }
 
                     // If yes - the leaf is redundant
-                    self.inner
-                        .get_mut(&root)
-                        .expect("root")
+                    self[root]
                         .children
                         .remove(&child_name)
                         .expect("child to be removed");
                     self.remove_subtree(child_idx);
                 } else {
                     // Move child from root to root's parent.
-                    self.inner
-                        .get_mut(&root)
-                        .expect("root")
+                    self[root]
                         .children
                         .remove(&child_name)
                         .expect("child to be removed");
-                    self.inner
-                        .get_mut(&parent)
-                        .expect("parent")
-                        .children
-                        .insert(child_name, child_idx);
+                    self[parent].children.insert(child_name, child_idx);
 
                     // Change child's parent
-                    self.inner.get_mut(&child_idx).expect("child").parent = Some(parent);
+                    self[child_idx].parent = Some(parent);
                 }
             }
         }
